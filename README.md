@@ -46,26 +46,22 @@ mechanical fault. Aggregate validation evidence is documented in
 ## How It Works
 
 ```mermaid
-flowchart LR
-    A[Machine] --> B[Android phone]
-
-    subgraph PHONE[MachinePulse Edge on Android]
-        B --> C[Microphone capture]
-        B --> D[Accelerometer capture]
-        C --> E[Signal features]
-        D --> E
-        E --> F{Capture quality gate}
-        F -->|Unstable, silent, or clipped| G[Reject and retry]
-        F -->|Accepted baseline| H[Learn baseline profile]
-        F -->|Accepted observation| I[Compare with baseline]
-        H --> I
-        I --> J{Explainable score}
-        J --> K[BASELINE MATCH]
-        J --> L[OUT OF BASELINE]
-    end
-
-    K --> M[Local result and ZIP export]
-    L --> M
+flowchart TD
+    machine["Machine sound and vibration"] --> phone["Android phone"]
+    phone --> mic["Microphone capture"]
+    phone --> motion["Accelerometer capture"]
+    mic --> features["Local signal features"]
+    motion --> features
+    features --> quality{"Quality accepted?"}
+    quality -->|No| retry["Reject and retry"]
+    quality -->|Baseline| baseline["Learn baseline profile"]
+    quality -->|Observation| compare["Compare with baseline"]
+    baseline --> compare
+    compare --> score["Explainable anomaly score"]
+    score --> match["BASELINE MATCH"]
+    score --> changed["OUT OF BASELINE"]
+    match --> output["Local result and ZIP export"]
+    changed --> output
 ```
 
 1. Record three quality-accepted sessions in the machine's normal state.
@@ -83,12 +79,12 @@ features, and any comparison result.
 
 ```mermaid
 erDiagram
-    MACHINE ||--o{ CAPTURE_SESSION : produces
-    CAPTURE_SESSION ||--|| AUDIO_STREAM : contains
-    CAPTURE_SESSION ||--|| MOTION_STREAM : contains
-    CAPTURE_SESSION ||--|| SIGNAL_FEATURES : derives
-    CAPTURE_SESSION ||--|| QUALITY_RESULT : validates
-    CAPTURE_SESSION o|--o| BASELINE_COMPARISON : scores
+    MACHINE ||--o{ SESSION : records
+    SESSION ||--|| AUDIO : contains
+    SESSION ||--|| MOTION : contains
+    SESSION ||--|| FEATURES : produces
+    SESSION ||--|| QUALITY : checks
+    SESSION ||--o| RESULT : may_produce
 
     MACHINE {
         string machine_id PK
@@ -96,44 +92,44 @@ erDiagram
         string type
     }
 
-    CAPTURE_SESSION {
+    SESSION {
         string session_id PK
         string session_type
         string outcome
-        long started_at_unix_ms
+        int started_at_ms
         int duration_ms
         string device_model
     }
 
-    AUDIO_STREAM {
+    AUDIO {
         string file_name
         int sample_rate_hz
         int channel_count
         string encoding
-        long sample_count
+        int sample_count
     }
 
-    MOTION_STREAM {
+    MOTION {
         string file_name
         int sample_count
         string sensor_name
         int sampling_period_us
     }
 
-    SIGNAL_FEATURES {
-        double audio_rms
-        double zero_crossing_rate
-        double motion_dynamic_rms
-        double motion_max_axis_range
+    FEATURES {
+        float audio_rms
+        float zero_crossing_rate
+        float motion_dynamic_rms
+        float motion_max_axis_range
     }
 
-    QUALITY_RESULT {
+    QUALITY {
         boolean accepted
         string reason
-        double clipping_fraction
+        float clipping_fraction
     }
 
-    BASELINE_COMPARISON {
+    RESULT {
         boolean out_of_baseline
         int score
         int audio_delta_percent
