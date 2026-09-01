@@ -118,8 +118,7 @@ sample-size limitations.
 
 ### M8 - Anomaly model
 
-**Status:** Rapid on-device prototype implemented on 2026-09-01; physical
-baseline-versus-observation validation remains.
+**Status:** Rapid on-device prototype validated on 2026-09-01.
 
 **Deliverables:** baseline-only `StandardScaler` plus an explainable statistical
 threshold or `IsolationForest`, held-out evaluation, and per-feature deviations.
@@ -130,13 +129,18 @@ RMS. It requires three quality-accepted baselines, rejects moved/clipped/silent
 captures, and does not claim fault diagnosis. Python evaluation remains the
 required follow-up before treating thresholds as validated.
 
+**Observed evidence:** three quality-accepted baseline sessions produced a
+normal-state `BASELINE MATCH` score of 40 and a controlled changed-state
+`OUT OF BASELINE` score of 999. A moved-phone observation was rejected before
+scoring. Exact aggregate measurements are recorded in
+`docs/results/prototype-validation.md`.
+
 **Exit evidence:** model artifact, reproducible command, leakage checks, and honest
 evaluation report.
 
 ### M9 - Android result UI
 
-**Status:** Prototype UI implemented on 2026-09-01; physical result replay
-remains.
+**Status:** Prototype UI physically validated on 2026-09-01.
 
 **Deliverables:** result ingestion, `BASELINE MATCH` / `OUT OF BASELINE` state,
 actual score and deviation values, evidence explanation, and accessible spectra.
