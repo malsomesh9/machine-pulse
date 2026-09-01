@@ -62,7 +62,7 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
     ) { granted ->
         motionCaptureController.refreshMicrophonePermission()
         if (granted) {
-            motionCaptureController.startCapture()
+            motionCaptureController.prepareCapture()
         } else {
             motionCaptureController.reportMicrophonePermissionDenied()
         }
@@ -72,7 +72,7 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
     }
     val startCombinedCapture = {
         if (motionCaptureController.hasMicrophonePermission()) {
-            motionCaptureController.startCapture()
+            motionCaptureController.prepareCapture()
         } else {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -131,14 +131,14 @@ private fun MachinePulseHome(
                     title = "Learn baseline",
                     detail = baselineDetail(captureState),
                     enabled = state.sensorCaptureReady,
-                    icon = if (captureState.isCapturing) Icons.Default.Close else Icons.Default.Settings,
-                    actionLabel = if (captureState.isCapturing) "Cancel capture" else "Learn",
+                    icon = if (captureState.isActive) Icons.Default.Close else Icons.Default.Settings,
+                    actionLabel = if (captureState.isActive) "Cancel capture" else "Learn",
                     progress = if (captureState.isCapturing) {
                         captureState.elapsedMillis.toFloat() / captureState.targetDurationMillis
                     } else {
                         null
                     },
-                    onClick = if (captureState.isCapturing) onCancelMotionCapture else onStartMotionCapture,
+                    onClick = if (captureState.isActive) onCancelMotionCapture else onStartMotionCapture,
                 )
                 WorkflowStep(
                     number = "02",
@@ -192,6 +192,7 @@ private fun Header(captureState: MotionCaptureUiState) {
 @Composable
 private fun StatusLine(captureState: MotionCaptureUiState) {
     val statusText = when (captureState.phase) {
+        MotionCapturePhase.PREPARING -> "GET READY | STARTING IN ${captureState.countdownSeconds}"
         MotionCapturePhase.CAPTURING -> "CAPTURING | AUDIO + MOTION"
         MotionCapturePhase.UNAVAILABLE -> "BLOCKED | ACCELEROMETER UNAVAILABLE"
         MotionCapturePhase.ERROR -> "ATTENTION | CAPTURE ERROR"
@@ -207,6 +208,7 @@ private fun StatusLine(captureState: MotionCaptureUiState) {
         MotionCapturePhase.CAPTURING,
         MotionCapturePhase.COMPLETE,
         -> MaterialTheme.colorScheme.primary
+        MotionCapturePhase.PREPARING,
         MotionCapturePhase.READY -> MaterialTheme.colorScheme.secondary
         MotionCapturePhase.ERROR,
         MotionCapturePhase.UNAVAILABLE,
@@ -414,6 +416,9 @@ private fun ReadinessPanel(captureState: MotionCaptureUiState) {
 
 private fun baselineDetail(captureState: MotionCaptureUiState): String {
     return when {
+        captureState.phase == MotionCapturePhase.PREPARING -> {
+            "Place phone flat and release it | starts in ${captureState.countdownSeconds} s"
+        }
         captureState.isCapturing -> {
             val elapsed = String.format(Locale.US, "%.1f", captureState.elapsedMillis / 1_000.0)
             val target = String.format(Locale.US, "%.1f", captureState.targetDurationMillis / 1_000.0)

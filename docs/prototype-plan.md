@@ -66,7 +66,8 @@ after validation so it is not counted as experimental table-fan data.
 pending operator approval of Android's microphone permission prompt.
 
 **Deliverables:** runtime permission flow, mono PCM 16-bit `AudioRecord` capture,
-valid WAV headers, denial/error states, and cancellation.
+valid WAV headers, a three-second placement countdown, denial/error states, and
+cancellation.
 
 **Exit evidence:** a physical phone produces a playable, correctly described WAV.
 

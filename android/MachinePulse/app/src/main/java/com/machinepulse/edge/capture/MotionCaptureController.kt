@@ -26,9 +26,12 @@ import java.util.Locale
 private const val DEFAULT_CAPTURE_DURATION_MILLIS = 10_000L
 private const val SENSOR_SAMPLING_PERIOD_MICROS = 10_000
 private const val UI_UPDATE_INTERVAL_MILLIS = 200L
+private const val SETTLE_COUNTDOWN_MILLIS = 3_000L
+private const val COUNTDOWN_UPDATE_INTERVAL_MILLIS = 100L
 
 enum class MotionCapturePhase {
     READY,
+    PREPARING,
     CAPTURING,
     COMPLETE,
     ERROR,
@@ -44,6 +47,7 @@ data class MotionCaptureUiState(
     val audioSampleCount: Long = 0,
     val baselineSessionCount: Int = 0,
     val microphonePermissionGranted: Boolean = false,
+    val countdownSeconds: Int = 0,
     val latestSummary: String? = null,
     val errorMessage: String? = null,
 ) {
@@ -52,6 +56,9 @@ data class MotionCaptureUiState(
 
     val isCapturing: Boolean
         get() = phase == MotionCapturePhase.CAPTURING
+
+    val isActive: Boolean
+        get() = phase == MotionCapturePhase.PREPARING || isCapturing
 }
 
 internal data class MotionSample(
@@ -87,6 +94,8 @@ class MotionCaptureController(context: Context) : SensorEventListener {
     private var sessionStartWallMillis = 0L
     private var lastSensorTimestampNanos = Long.MIN_VALUE
     private var activeSampleCount = 0
+    private var countdownEndsAtElapsedNanos = 0L
+    private var pendingCaptureDurationMillis = DEFAULT_CAPTURE_DURATION_MILLIS
 
     var uiState by mutableStateOf(initialState())
         private set
@@ -107,7 +116,55 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         }
     }
 
-    fun startCapture(durationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS) {
+    private val countdownUpdate = object : Runnable {
+        override fun run() {
+            if (uiState.phase != MotionCapturePhase.PREPARING) return
+            val remainingNanos = countdownEndsAtElapsedNanos - SystemClock.elapsedRealtimeNanos()
+            if (remainingNanos <= 0) {
+                startCapture(pendingCaptureDurationMillis)
+                return
+            }
+            val remainingSeconds = ((remainingNanos + 999_999_999L) / 1_000_000_000L).toInt()
+            uiState = uiState.copy(countdownSeconds = remainingSeconds)
+            mainHandler.postDelayed(this, COUNTDOWN_UPDATE_INTERVAL_MILLIS)
+        }
+    }
+
+    fun prepareCapture(durationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS) {
+        if (uiState.isActive) return
+        if (accelerometer == null) {
+            uiState = uiState.copy(
+                phase = MotionCapturePhase.UNAVAILABLE,
+                errorMessage = "This phone does not expose an accelerometer.",
+            )
+            return
+        }
+        if (!hasMicrophonePermission()) {
+            uiState = uiState.copy(
+                phase = MotionCapturePhase.READY,
+                microphonePermissionGranted = false,
+                errorMessage = "Microphone permission is required for combined capture.",
+            )
+            return
+        }
+
+        pendingCaptureDurationMillis = durationMillis
+        countdownEndsAtElapsedNanos = SystemClock.elapsedRealtimeNanos() +
+            SETTLE_COUNTDOWN_MILLIS * 1_000_000L
+        uiState = uiState.copy(
+            phase = MotionCapturePhase.PREPARING,
+            countdownSeconds = (SETTLE_COUNTDOWN_MILLIS / 1_000L).toInt(),
+            targetDurationMillis = durationMillis,
+            elapsedMillis = 0,
+            sampleCount = 0,
+            audioSampleCount = 0,
+            latestSummary = null,
+            errorMessage = null,
+        )
+        mainHandler.post(countdownUpdate)
+    }
+
+    private fun startCapture(durationMillis: Long) {
         if (uiState.isCapturing) return
         val sensor = accelerometer
         if (sensor == null) {
@@ -165,6 +222,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
                 targetDurationMillis = durationMillis,
                 sampleCount = 0,
                 audioSampleCount = 0,
+                countdownSeconds = 0,
                 microphonePermissionGranted = true,
                 latestSummary = null,
                 errorMessage = null,
@@ -202,13 +260,23 @@ class MotionCaptureController(context: Context) : SensorEventListener {
     }
 
     fun cancelCapture() {
-        if (uiState.isCapturing) {
+        if (uiState.phase == MotionCapturePhase.PREPARING) {
+            mainHandler.removeCallbacks(countdownUpdate)
+            uiState = uiState.copy(
+                phase = MotionCapturePhase.READY,
+                countdownSeconds = 0,
+                latestSummary = "Capture cancelled before recording started",
+                errorMessage = null,
+            )
+        } else if (uiState.isCapturing) {
             finishCapture(completed = false, cancellationReason = "Cancelled by operator")
         }
     }
 
     fun stopForLifecycle() {
-        if (uiState.isCapturing) {
+        if (uiState.phase == MotionCapturePhase.PREPARING) {
+            cancelCapture()
+        } else if (uiState.isCapturing) {
             finishCapture(completed = false, cancellationReason = "Stopped when app left foreground")
         }
     }
