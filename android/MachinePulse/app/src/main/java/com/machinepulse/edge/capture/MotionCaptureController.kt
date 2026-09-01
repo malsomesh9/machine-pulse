@@ -2,6 +2,7 @@ package com.machinepulse.edge.capture
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -257,6 +258,10 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             microphonePermissionGranted = false,
             errorMessage = "Microphone access was denied. Tap Learn to try again.",
         )
+    }
+
+    fun createLatestSessionShareIntent(): Intent {
+        return SessionExporter(appContext).createLatestSessionShareIntent()
     }
 
     fun cancelCapture() {

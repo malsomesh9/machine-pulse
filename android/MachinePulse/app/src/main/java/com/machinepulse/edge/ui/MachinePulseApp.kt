@@ -1,6 +1,8 @@
 package com.machinepulse.edge.ui
 
 import android.Manifest
+import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -48,6 +51,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.machinepulse.edge.capture.MotionCaptureController
 import com.machinepulse.edge.capture.MotionCapturePhase
 import com.machinepulse.edge.capture.MotionCaptureUiState
@@ -56,6 +60,7 @@ import java.util.Locale
 
 @Composable
 fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
+    val context = LocalContext.current
     val captureState = motionCaptureController.uiState
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -77,6 +82,18 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+    val shareLatestSession: () -> Unit = {
+        try {
+            val sendIntent = motionCaptureController.createLatestSessionShareIntent()
+            context.startActivity(Intent.createChooser(sendIntent, "Export MachinePulse session"))
+        } catch (error: Exception) {
+            Toast.makeText(
+                context,
+                error.message ?: "Session export failed.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     val state = HomeUiState(
         baselineSessionCount = captureState.baselineSessionCount,
         sensorCaptureReady = captureState.sensorAvailable,
@@ -89,6 +106,7 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
             captureState = captureState,
             onStartMotionCapture = startCombinedCapture,
             onCancelMotionCapture = motionCaptureController::cancelCapture,
+            onShareLatestSession = shareLatestSession,
             modifier = Modifier.padding(innerPadding),
         )
     }
@@ -100,6 +118,7 @@ private fun MachinePulseHome(
     captureState: MotionCaptureUiState,
     onStartMotionCapture: () -> Unit,
     onCancelMotionCapture: () -> Unit,
+    onShareLatestSession: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -156,7 +175,7 @@ private fun MachinePulseHome(
             }
         }
         item {
-            ReadinessPanel(captureState)
+            ReadinessPanel(captureState, onShareLatestSession)
         }
         item {
             Spacer(Modifier.height(8.dp))
@@ -382,7 +401,10 @@ private fun WorkflowStep(
 }
 
 @Composable
-private fun ReadinessPanel(captureState: MotionCaptureUiState) {
+private fun ReadinessPanel(
+    captureState: MotionCaptureUiState,
+    onShareLatestSession: () -> Unit,
+) {
     val detail = captureState.errorMessage
         ?: captureState.latestSummary
         ?: captureState.sensorName?.let {
@@ -411,6 +433,18 @@ private fun ReadinessPanel(captureState: MotionCaptureUiState) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (captureState.baselineSessionCount > 0 && !captureState.isActive) {
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = onShareLatestSession,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(6.dp),
+            ) {
+                Icon(Icons.Default.Share, contentDescription = null)
+                Spacer(Modifier.size(8.dp))
+                Text("Export latest")
+            }
+        }
     }
 }
 
@@ -452,6 +486,7 @@ private fun MachinePulseHomePreview() {
             ),
             onStartMotionCapture = {},
             onCancelMotionCapture = {},
+            onShareLatestSession = {},
         )
     }
 }

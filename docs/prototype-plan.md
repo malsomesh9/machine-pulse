@@ -62,8 +62,7 @@ after validation so it is not counted as experimental table-fan data.
 
 ### M3 - Microphone capture works
 
-**Status:** Implementation complete on 2026-09-01; physical WAV validation is
-pending operator approval of Android's microphone permission prompt.
+**Status:** Complete on 2026-09-01.
 
 **Deliverables:** runtime permission flow, mono PCM 16-bit `AudioRecord` capture,
 valid WAV headers, a three-second placement countdown, denial/error states, and
@@ -71,12 +70,27 @@ cancellation.
 
 **Exit evidence:** a physical phone produces a playable, correctly described WAV.
 
+**Observed evidence:** the realme RMX5085 produced a mono PCM16 WAV containing
+440,832 samples at 44.1 kHz (9.996 seconds). The recording had RMS amplitude
+646.1, peak amplitude 9,020, zero clipped samples, and negligible DC offset.
+The paired accelerometer CSV contained 995 monotonic samples with observed axis
+ranges of 0.057, 0.057, and 0.069901 m/s2, confirming stable placement. An
+earlier combined rehearsal showed larger motion ranges and is excluded from
+experimental use.
+
 ### M4 - Session export works
+
+**Status:** Complete on 2026-09-01.
 
 **Deliverables:** one session directory containing audio, accelerometer,
 optional gyroscope, and metadata files; local share/export workflow.
 
 **Exit evidence:** exported session passes a structural validator on the Mac.
+
+**Observed evidence:** Android's share sheet opened with the latest stable
+combined session as a 688,113-byte ZIP. Mac-side in-memory validation found
+exactly `accelerometer.csv`, `audio.wav`, and `metadata.json`; the ZIP CRC check
+reported no corrupt entry.
 
 ### M5 - Real table-fan data collected
 
