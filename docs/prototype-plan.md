@@ -62,6 +62,9 @@ after validation so it is not counted as experimental table-fan data.
 
 ### M3 - Microphone capture works
 
+**Status:** Implementation complete on 2026-09-01; physical WAV validation is
+pending operator approval of Android's microphone permission prompt.
+
 **Deliverables:** runtime permission flow, mono PCM 16-bit `AudioRecord` capture,
 valid WAV headers, denial/error states, and cancellation.
 

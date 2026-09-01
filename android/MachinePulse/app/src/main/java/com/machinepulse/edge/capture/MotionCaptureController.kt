@@ -1,6 +1,8 @@
 package com.machinepulse.edge.capture
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -12,6 +14,7 @@ import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.File
@@ -38,7 +41,9 @@ data class MotionCaptureUiState(
     val elapsedMillis: Long = 0,
     val targetDurationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS,
     val sampleCount: Int = 0,
+    val audioSampleCount: Long = 0,
     val baselineSessionCount: Int = 0,
+    val microphonePermissionGranted: Boolean = false,
     val latestSummary: String? = null,
     val errorMessage: String? = null,
 ) {
@@ -76,6 +81,8 @@ class MotionCaptureController(context: Context) : SensorEventListener {
 
     private var sessionDirectory: File? = null
     private var csvWriter: BufferedWriter? = null
+    private var audioCaptureEngine: AudioCaptureEngine? = null
+    private var audioCaptureResult: AudioCaptureResult? = null
     private var sessionStartElapsedNanos = 0L
     private var sessionStartWallMillis = 0L
     private var lastSensorTimestampNanos = Long.MIN_VALUE
@@ -110,6 +117,14 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             )
             return
         }
+        if (!hasMicrophonePermission()) {
+            uiState = uiState.copy(
+                phase = MotionCapturePhase.READY,
+                microphonePermissionGranted = false,
+                errorMessage = "Microphone permission is required for combined capture.",
+            )
+            return
+        }
 
         try {
             sessionsDirectory.mkdirs()
@@ -124,6 +139,15 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             sessionStartWallMillis = System.currentTimeMillis()
             lastSensorTimestampNanos = Long.MIN_VALUE
             activeSampleCount = 0
+            audioCaptureResult = null
+
+            audioCaptureEngine = AudioCaptureEngine(sessionDirectory!!) { error ->
+                mainHandler.post {
+                    if (uiState.isCapturing) {
+                        finishCapture(completed = false, failure = error)
+                    }
+                }
+            }.also { it.start() }
 
             val registered = sensorManager.registerListener(
                 this,
@@ -140,6 +164,8 @@ class MotionCaptureController(context: Context) : SensorEventListener {
                 elapsedMillis = 0,
                 targetDurationMillis = durationMillis,
                 sampleCount = 0,
+                audioSampleCount = 0,
+                microphonePermissionGranted = true,
                 latestSummary = null,
                 errorMessage = null,
             )
@@ -147,11 +173,32 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         } catch (error: Exception) {
             sensorManager.unregisterListener(this)
             closeWriter()
+            audioCaptureEngine?.release()
+            audioCaptureEngine = null
+            sessionDirectory?.deleteRecursively()
+            sessionDirectory = null
             uiState = uiState.copy(
                 phase = MotionCapturePhase.ERROR,
                 errorMessage = error.message ?: "Motion capture could not start.",
             )
         }
+    }
+
+    fun hasMicrophonePermission(): Boolean {
+        return appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    fun refreshMicrophonePermission() {
+        uiState = uiState.copy(microphonePermissionGranted = hasMicrophonePermission())
+    }
+
+    fun reportMicrophonePermissionDenied() {
+        uiState = uiState.copy(
+            phase = MotionCapturePhase.READY,
+            microphonePermissionGranted = false,
+            errorMessage = "Microphone access was denied. Tap Learn to try again.",
+        )
     }
 
     fun cancelCapture() {
@@ -171,6 +218,8 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         mainHandler.removeCallbacksAndMessages(null)
         sensorManager.unregisterListener(this)
         closeWriter()
+        audioCaptureEngine?.release()
+        audioCaptureEngine = null
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -215,16 +264,24 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         closeWriter()
 
         val durationMillis = elapsedSinceSessionStartMillis()
+        val audioFailure = runCatching {
+            audioCaptureEngine?.stopAndWriteWav()
+                ?: throw IllegalStateException("Microphone capture was not active.")
+        }.onSuccess {
+            audioCaptureResult = it
+        }.exceptionOrNull()
+        audioCaptureEngine = null
+        val finalFailure = failure ?: audioFailure
         val outcome = when {
-            failure != null -> "failed"
-            completed && activeSampleCount > 0 -> "completed"
+            finalFailure != null -> "failed"
+            completed && activeSampleCount > 0 && (audioCaptureResult?.sampleCount ?: 0) > 0 -> "completed"
             completed -> "failed"
             else -> "cancelled"
         }
         writeMetadata(
             outcome = outcome,
             durationMillis = durationMillis,
-            note = failure?.message ?: cancellationReason,
+            note = finalFailure?.message ?: cancellationReason,
         )
 
         uiState = when (outcome) {
@@ -232,22 +289,26 @@ class MotionCaptureController(context: Context) : SensorEventListener {
                 phase = MotionCapturePhase.COMPLETE,
                 elapsedMillis = durationMillis,
                 sampleCount = activeSampleCount,
+                audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
                 baselineSessionCount = uiState.baselineSessionCount + 1,
-                latestSummary = "Saved ${formatSeconds(durationMillis)} s | $activeSampleCount motion samples",
+                latestSummary = "Saved ${formatSeconds(durationMillis)} s | " +
+                    "$activeSampleCount motion + ${audioCaptureResult?.sampleCount ?: 0} audio samples",
                 errorMessage = null,
             )
             "cancelled" -> uiState.copy(
                 phase = MotionCapturePhase.READY,
                 elapsedMillis = durationMillis,
                 sampleCount = activeSampleCount,
-                latestSummary = "Capture cancelled | $activeSampleCount partial samples retained",
+                audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
+                latestSummary = "Capture cancelled | partial WAV and CSV retained",
                 errorMessage = null,
             )
             else -> uiState.copy(
                 phase = MotionCapturePhase.ERROR,
                 elapsedMillis = durationMillis,
                 sampleCount = activeSampleCount,
-                errorMessage = failure?.message ?: "No accelerometer samples were received.",
+                audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
+                errorMessage = finalFailure?.message ?: "The combined capture contained no samples.",
             )
         }
 
@@ -258,14 +319,19 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         val directory = sessionDirectory ?: return
         val sensor = accelerometer ?: return
         val metadata = JSONObject().apply {
-            put("schema_version", 1)
+            put("schema_version", 2)
             put("session_type", "baseline")
-            put("capture_channel", "accelerometer")
+            put("capture_channels", JSONArray(listOf("accelerometer", "microphone")))
             put("outcome", outcome)
             put("started_at_unix_ms", sessionStartWallMillis)
             put("duration_ms", durationMillis)
             put("target_duration_ms", uiState.targetDurationMillis)
             put("sample_count", activeSampleCount)
+            put("audio_sample_count", audioCaptureResult?.sampleCount ?: 0)
+            put("audio_sample_rate_hz", audioCaptureResult?.sampleRateHz ?: AUDIO_SAMPLE_RATE_HZ)
+            put("audio_channel_count", 1)
+            put("audio_encoding", "PCM_16BIT_LE")
+            put("audio_data_bytes", audioCaptureResult?.dataBytes ?: 0)
             put("manufacturer", Build.MANUFACTURER)
             put("model", Build.MODEL)
             put("device", Build.DEVICE)
@@ -297,6 +363,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
                 phase = MotionCapturePhase.READY,
                 sensorName = sensor.name,
                 baselineSessionCount = countCompletedBaselineSessions(),
+                microphonePermissionGranted = hasMicrophonePermission(),
             )
         }
     }
@@ -307,7 +374,9 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             ?.count { directory ->
                 runCatching {
                     JSONObject(File(directory, "metadata.json").readText())
-                        .optString("outcome") == "completed"
+                        .optString("outcome") == "completed" &&
+                        File(directory, "accelerometer.csv").isFile &&
+                        File(directory, "audio.wav").isFile
                 }.getOrDefault(false)
             }
             ?: 0
