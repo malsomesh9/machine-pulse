@@ -46,11 +46,19 @@ the APK reports package `com.machinepulse.edge`, version code `1`, version
 
 ### M2 - Accelerometer capture works
 
+**Status:** Complete on 2026-09-01.
+
 **Deliverables:** lifecycle-aware `SensorManager` capture, timestamped x/y/z CSV,
 availability handling, elapsed-time state, cancellation, and metadata.
 
 **Exit evidence:** a physical phone records a valid CSV whose timestamps are
 monotonic and whose values change when the phone moves.
+
+**Observed evidence:** the debug app captured 1,004 samples over 10.2 seconds on
+a realme RMX5085 using its Bosch `bmi2xy acc` sensor. The CSV had zero
+non-monotonic timestamps. Observed axis ranges were 0.04995, 0.0579, and 0.0549
+m/s2 for x, y, and z respectively. This engineering sanity session was deleted
+after validation so it is not counted as experimental table-fan data.
 
 ### M3 - Microphone capture works
 
@@ -115,6 +123,7 @@ labeled future milestone.
 
 ## Physical Stop Point
 
-After M1, work pauses before M2 until a physical Android phone is connected and
-USB debugging is authorized. The operator will need to run `adb devices`, accept
-the phone prompt, install the debug APK, and perform a short sensor sanity check.
+M2 physical validation is complete. Work now pauses before M3 until microphone
+permission and `AudioRecord` capture are implemented and verified on the same
+phone. Real table-fan dataset collection remains blocked until both capture
+channels are available in a single session.

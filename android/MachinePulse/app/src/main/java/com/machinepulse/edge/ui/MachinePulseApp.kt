@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -25,13 +26,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,16 +44,27 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.machinepulse.edge.capture.MotionCaptureController
+import com.machinepulse.edge.capture.MotionCapturePhase
+import com.machinepulse.edge.capture.MotionCaptureUiState
 import com.machinepulse.edge.ui.theme.MachinePulseTheme
+import java.util.Locale
 
 @Composable
-fun MachinePulseApp() {
-    val state = remember { HomeUiState() }
+fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
+    val captureState = motionCaptureController.uiState
+    val state = HomeUiState(
+        baselineSessionCount = captureState.baselineSessionCount,
+        sensorCaptureReady = captureState.sensorAvailable,
+    )
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
     ) { innerPadding ->
         MachinePulseHome(
             state = state,
+            captureState = captureState,
+            onStartMotionCapture = motionCaptureController::startCapture,
+            onCancelMotionCapture = motionCaptureController::cancelCapture,
             modifier = Modifier.padding(innerPadding),
         )
     }
@@ -61,6 +73,9 @@ fun MachinePulseApp() {
 @Composable
 private fun MachinePulseHome(
     state: HomeUiState,
+    captureState: MotionCaptureUiState,
+    onStartMotionCapture: () -> Unit,
+    onCancelMotionCapture: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -70,7 +85,7 @@ private fun MachinePulseHome(
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
         item {
-            Header()
+            Header(captureState)
         }
         item {
             Column(
@@ -90,21 +105,34 @@ private fun MachinePulseHome(
                 WorkflowStep(
                     number = "01",
                     title = "Learn baseline",
-                    detail = "No baseline sessions recorded",
+                    detail = baselineDetail(captureState),
                     enabled = state.sensorCaptureReady,
-                    icon = Icons.Default.Settings,
+                    icon = if (captureState.isCapturing) Icons.Default.Close else Icons.Default.Settings,
+                    actionLabel = if (captureState.isCapturing) "Cancel capture" else "Learn",
+                    progress = if (captureState.isCapturing) {
+                        captureState.elapsedMillis.toFloat() / captureState.targetDurationMillis
+                    } else {
+                        null
+                    },
+                    onClick = if (captureState.isCapturing) onCancelMotionCapture else onStartMotionCapture,
                 )
                 WorkflowStep(
                     number = "02",
                     title = "Scan machine",
-                    detail = "Available after a baseline is learned",
-                    enabled = state.baselineReady,
+                    detail = if (state.baselineReady) {
+                        "Motion baseline saved; microphone capture is next"
+                    } else {
+                        "Available after capture channels are verified"
+                    },
+                    enabled = state.scanReady,
                     icon = Icons.Default.PlayArrow,
+                    actionLabel = "Scan",
+                    onClick = {},
                 )
             }
         }
         item {
-            ReadinessPanel()
+            ReadinessPanel(captureState)
         }
         item {
             Spacer(Modifier.height(8.dp))
@@ -113,7 +141,7 @@ private fun MachinePulseHome(
 }
 
 @Composable
-private fun Header() {
+private fun Header(captureState: MotionCaptureUiState) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -133,27 +161,44 @@ private fun Header() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(10.dp))
-        StatusLine()
+        StatusLine(captureState)
     }
 }
 
 @Composable
-private fun StatusLine() {
+private fun StatusLine(captureState: MotionCaptureUiState) {
+    val statusText = when (captureState.phase) {
+        MotionCapturePhase.CAPTURING -> "CAPTURING | ACCELEROMETER"
+        MotionCapturePhase.UNAVAILABLE -> "BLOCKED | ACCELEROMETER UNAVAILABLE"
+        MotionCapturePhase.ERROR -> "ATTENTION | CAPTURE ERROR"
+        MotionCapturePhase.READY,
+        MotionCapturePhase.COMPLETE,
+        -> "READY | MOTION SENSOR CONNECTED"
+    }
+    val statusColor = when (captureState.phase) {
+        MotionCapturePhase.CAPTURING,
+        MotionCapturePhase.COMPLETE,
+        -> MaterialTheme.colorScheme.primary
+        MotionCapturePhase.READY -> MaterialTheme.colorScheme.secondary
+        MotionCapturePhase.ERROR,
+        MotionCapturePhase.UNAVAILABLE,
+        -> MaterialTheme.colorScheme.error
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.semantics(mergeDescendants = true) {
-            contentDescription = "Setup status. Sensor capture not connected."
+            contentDescription = statusText.lowercase(Locale.US)
         },
     ) {
         Box(
             Modifier
                 .size(8.dp)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.tertiary),
+                .background(statusColor),
         )
         Text(
-            text = "SETUP | SENSOR CAPTURE NOT CONNECTED",
+            text = statusText,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = FontWeight.SemiBold,
@@ -244,6 +289,9 @@ private fun WorkflowStep(
     detail: String,
     enabled: Boolean,
     icon: ImageVector,
+    actionLabel: String,
+    progress: Float? = null,
+    onClick: () -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -280,8 +328,14 @@ private fun WorkflowStep(
                     )
                 }
             }
+            if (progress != null) {
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             Button(
-                onClick = {},
+                onClick = onClick,
                 enabled = enabled,
                 shape = RoundedCornerShape(6.dp),
                 contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
@@ -291,14 +345,18 @@ private fun WorkflowStep(
             ) {
                 Icon(icon, contentDescription = null)
                 Spacer(Modifier.size(8.dp))
-                Text(if (number == "01") "Learn" else "Scan")
+                Text(actionLabel)
             }
         }
     }
 }
 
 @Composable
-private fun ReadinessPanel() {
+private fun ReadinessPanel(captureState: MotionCaptureUiState) {
+    val detail = captureState.errorMessage
+        ?: captureState.latestSummary
+        ?: captureState.sensorName?.let { "Accelerometer ready: $it" }
+        ?: "Accelerometer capture is unavailable on this phone."
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -307,16 +365,28 @@ private fun ReadinessPanel() {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
-            text = "M1 | APP SHELL",
+            text = "M2 | MOTION CAPTURE",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "Capture controls unlock only after sensor recording is implemented and verified.",
+            text = detail,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+private fun baselineDetail(captureState: MotionCaptureUiState): String {
+    return when {
+        captureState.isCapturing -> {
+            val elapsed = String.format(Locale.US, "%.1f", captureState.elapsedMillis / 1_000.0)
+            val target = String.format(Locale.US, "%.1f", captureState.targetDurationMillis / 1_000.0)
+            "Recording motion $elapsed / $target s | ${captureState.sampleCount} samples"
+        }
+        captureState.baselineSessionCount == 0 -> "No motion baseline sessions recorded"
+        else -> "${captureState.baselineSessionCount} motion baseline session(s) saved"
     }
 }
 
@@ -334,6 +404,14 @@ private fun SectionLabel(text: String) {
 @Composable
 private fun MachinePulseHomePreview() {
     MachinePulseTheme {
-        MachinePulseHome(HomeUiState())
+        MachinePulseHome(
+            state = HomeUiState(sensorCaptureReady = true),
+            captureState = MotionCaptureUiState(
+                phase = MotionCapturePhase.READY,
+                sensorName = "Preview accelerometer",
+            ),
+            onStartMotionCapture = {},
+            onCancelMotionCapture = {},
+        )
     }
 }
