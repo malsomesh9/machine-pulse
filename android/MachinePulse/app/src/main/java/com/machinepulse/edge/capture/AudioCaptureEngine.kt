@@ -10,7 +10,9 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sqrt
 
 internal const val AUDIO_SAMPLE_RATE_HZ = 44_100
 private const val AUDIO_CHANNEL_COUNT: Short = 1
@@ -21,6 +23,10 @@ internal data class AudioCaptureResult(
     val sampleRateHz: Int,
     val sampleCount: Long,
     val dataBytes: Long,
+    val rmsAmplitude: Double,
+    val peakAmplitude: Int,
+    val clippingFraction: Double,
+    val zeroCrossingRate: Double,
 )
 
 internal class AudioCaptureEngine(
@@ -33,6 +39,12 @@ internal class AudioCaptureEngine(
 
     private var audioRecord: AudioRecord? = null
     private var recordingThread: Thread? = null
+    private var processedSamples = 0L
+    private var sampleSquareSum = 0.0
+    private var peakAmplitude = 0
+    private var clippedSamples = 0L
+    private var zeroCrossings = 0L
+    private var previousSample: Int? = null
 
     @Volatile
     private var bytesWritten = 0L
@@ -71,6 +83,12 @@ internal class AudioCaptureEngine(
         }
 
         bytesWritten = 0
+        processedSamples = 0
+        sampleSquareSum = 0.0
+        peakAmplitude = 0
+        clippedSamples = 0
+        zeroCrossings = 0
+        previousSample = null
         recordingFailure = null
         audioRecord = recorder
         recorder.startRecording()
@@ -98,6 +116,7 @@ internal class AudioCaptureEngine(
                                 read > 0 -> {
                                     output.write(buffer, 0, read)
                                     bytesWritten += read
+                                    updateAudioStatistics(buffer, read)
                                 }
                                 read < 0 && running.get() -> {
                                     throw IllegalStateException("Microphone read failed with code $read.")
@@ -143,8 +162,12 @@ internal class AudioCaptureEngine(
 
         return AudioCaptureResult(
             sampleRateHz = AUDIO_SAMPLE_RATE_HZ,
-            sampleCount = bytesWritten / (AUDIO_CHANNEL_COUNT * AUDIO_BITS_PER_SAMPLE / 8),
+            sampleCount = processedSamples,
             dataBytes = bytesWritten,
+            rmsAmplitude = sqrt(sampleSquareSum / processedSamples.coerceAtLeast(1)),
+            peakAmplitude = peakAmplitude,
+            clippingFraction = clippedSamples.toDouble() / processedSamples.coerceAtLeast(1),
+            zeroCrossingRate = zeroCrossings.toDouble() / processedSamples.coerceAtLeast(1),
         )
     }
 
@@ -155,6 +178,28 @@ internal class AudioCaptureEngine(
         audioRecord?.release()
         audioRecord = null
         recordingThread = null
+    }
+
+    private fun updateAudioStatistics(buffer: ByteArray, byteCount: Int) {
+        var index = 0
+        while (index + 1 < byteCount) {
+            val sample = (
+                (buffer[index].toInt() and 0xff) or
+                    (buffer[index + 1].toInt() shl 8)
+                ).toShort().toInt()
+            val amplitude = abs(sample)
+            sampleSquareSum += sample.toDouble() * sample
+            peakAmplitude = max(peakAmplitude, amplitude)
+            if (amplitude >= 32_760) clippedSamples += 1
+            previousSample?.let { previous ->
+                if ((previous < 0 && sample >= 0) || (previous >= 0 && sample < 0)) {
+                    zeroCrossings += 1
+                }
+            }
+            previousSample = sample
+            processedSamples += 1
+            index += 2
+        }
     }
 }
 

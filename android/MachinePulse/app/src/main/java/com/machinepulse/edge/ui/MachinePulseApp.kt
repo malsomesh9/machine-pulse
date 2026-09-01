@@ -40,6 +40,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,6 +54,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import com.machinepulse.edge.capture.BaselineComparison
+import com.machinepulse.edge.capture.CaptureMode
 import com.machinepulse.edge.capture.MotionCaptureController
 import com.machinepulse.edge.capture.MotionCapturePhase
 import com.machinepulse.edge.capture.MotionCaptureUiState
@@ -62,12 +66,17 @@ import java.util.Locale
 fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
     val context = LocalContext.current
     val captureState = motionCaptureController.uiState
+    val permissionCaptureMode = remember { mutableStateOf(CaptureMode.BASELINE) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         motionCaptureController.refreshMicrophonePermission()
         if (granted) {
-            motionCaptureController.prepareCapture()
+            if (permissionCaptureMode.value == CaptureMode.BASELINE) {
+                motionCaptureController.prepareBaselineCapture()
+            } else {
+                motionCaptureController.prepareObservationCapture()
+            }
         } else {
             motionCaptureController.reportMicrophonePermissionDenied()
         }
@@ -75,10 +84,15 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
     LaunchedEffect(Unit) {
         motionCaptureController.refreshMicrophonePermission()
     }
-    val startCombinedCapture = {
+    val startCombinedCapture: (CaptureMode) -> Unit = { mode ->
         if (motionCaptureController.hasMicrophonePermission()) {
-            motionCaptureController.prepareCapture()
+            if (mode == CaptureMode.BASELINE) {
+                motionCaptureController.prepareBaselineCapture()
+            } else {
+                motionCaptureController.prepareObservationCapture()
+            }
         } else {
+            permissionCaptureMode.value = mode
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
@@ -97,6 +111,7 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
     val state = HomeUiState(
         baselineSessionCount = captureState.baselineSessionCount,
         sensorCaptureReady = captureState.sensorAvailable,
+        audioCaptureReady = true,
     )
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -104,7 +119,8 @@ fun MachinePulseApp(motionCaptureController: MotionCaptureController) {
         MachinePulseHome(
             state = state,
             captureState = captureState,
-            onStartMotionCapture = startCombinedCapture,
+            onStartMotionCapture = { startCombinedCapture(CaptureMode.BASELINE) },
+            onStartScanCapture = { startCombinedCapture(CaptureMode.OBSERVATION) },
             onCancelMotionCapture = motionCaptureController::cancelCapture,
             onShareLatestSession = shareLatestSession,
             modifier = Modifier.padding(innerPadding),
@@ -117,6 +133,7 @@ private fun MachinePulseHome(
     state: HomeUiState,
     captureState: MotionCaptureUiState,
     onStartMotionCapture: () -> Unit,
+    onStartScanCapture: () -> Unit,
     onCancelMotionCapture: () -> Unit,
     onShareLatestSession: () -> Unit,
     modifier: Modifier = Modifier,
@@ -145,33 +162,53 @@ private fun MachinePulseHome(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SectionLabel("WORKFLOW")
+                val baselineActive = captureState.isActive &&
+                    captureState.captureMode == CaptureMode.BASELINE
+                val scanActive = captureState.isActive &&
+                    captureState.captureMode == CaptureMode.OBSERVATION
                 WorkflowStep(
                     number = "01",
                     title = "Learn baseline",
                     detail = baselineDetail(captureState),
-                    enabled = state.sensorCaptureReady,
-                    icon = if (captureState.isActive) Icons.Default.Close else Icons.Default.Settings,
-                    actionLabel = if (captureState.isActive) "Cancel capture" else "Learn",
-                    progress = if (captureState.isCapturing) {
+                    enabled = state.sensorCaptureReady && (!captureState.isActive || baselineActive),
+                    icon = if (baselineActive) Icons.Default.Close else Icons.Default.Settings,
+                    actionLabel = if (baselineActive) "Cancel capture" else "Learn",
+                    progress = if (captureState.isCapturing && baselineActive) {
                         captureState.elapsedMillis.toFloat() / captureState.targetDurationMillis
                     } else {
                         null
                     },
-                    onClick = if (captureState.isActive) onCancelMotionCapture else onStartMotionCapture,
+                    onClick = if (baselineActive) onCancelMotionCapture else onStartMotionCapture,
                 )
                 WorkflowStep(
                     number = "02",
                     title = "Scan machine",
                     detail = if (state.baselineReady) {
-                        "Combined baseline saved; anomaly scoring is next"
+                        scanDetail(captureState)
                     } else {
-                        "Available after an audio + motion baseline is saved"
+                        "Record 3 accepted baselines first"
                     },
-                    enabled = state.scanReady,
-                    icon = Icons.Default.PlayArrow,
-                    actionLabel = "Scan",
-                    onClick = {},
+                    enabled = state.scanReady && (!captureState.isActive || scanActive),
+                    icon = if (scanActive) Icons.Default.Close else Icons.Default.PlayArrow,
+                    actionLabel = if (scanActive) "Cancel scan" else "Scan",
+                    progress = if (captureState.isCapturing && scanActive) {
+                        captureState.elapsedMillis.toFloat() / captureState.targetDurationMillis
+                    } else {
+                        null
+                    },
+                    onClick = if (scanActive) onCancelMotionCapture else onStartScanCapture,
                 )
+            }
+        }
+        captureState.latestComparison?.let { comparison ->
+            item {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SectionLabel("LATEST RESULT")
+                    ScanResultPanel(comparison)
+                }
             }
         }
         item {
@@ -211,8 +248,16 @@ private fun Header(captureState: MotionCaptureUiState) {
 @Composable
 private fun StatusLine(captureState: MotionCaptureUiState) {
     val statusText = when (captureState.phase) {
-        MotionCapturePhase.PREPARING -> "GET READY | STARTING IN ${captureState.countdownSeconds}"
-        MotionCapturePhase.CAPTURING -> "CAPTURING | AUDIO + MOTION"
+        MotionCapturePhase.PREPARING -> if (captureState.captureMode == CaptureMode.BASELINE) {
+            "GET READY | BASELINE IN ${captureState.countdownSeconds}"
+        } else {
+            "GET READY | SCAN IN ${captureState.countdownSeconds}"
+        }
+        MotionCapturePhase.CAPTURING -> if (captureState.captureMode == CaptureMode.BASELINE) {
+            "LEARNING | AUDIO + MOTION"
+        } else {
+            "SCANNING | AUDIO + MOTION"
+        }
         MotionCapturePhase.UNAVAILABLE -> "BLOCKED | ACCELEROMETER UNAVAILABLE"
         MotionCapturePhase.ERROR -> "ATTENTION | CAPTURE ERROR"
         MotionCapturePhase.READY,
@@ -401,6 +446,88 @@ private fun WorkflowStep(
 }
 
 @Composable
+private fun ScanResultPanel(comparison: BaselineComparison) {
+    val resultColor = if (comparison.outOfBaseline) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, resultColor),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = if (comparison.outOfBaseline) {
+                            "OUT OF BASELINE"
+                        } else {
+                            "BASELINE MATCH"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = resultColor,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = comparison.primaryExplanation,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = comparison.score.toString(),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = resultColor,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "SCORE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            ResultMetric("Acoustic RMS", comparison.audioRmsDeltaPercent)
+            ResultMetric("Vibration energy", comparison.vibrationDeltaPercent)
+            ResultMetric("Spectral proxy", comparison.spectralProxyDeltaPercent)
+        }
+    }
+}
+
+@Composable
+private fun ResultMetric(label: String, deltaPercent: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = if (deltaPercent >= 0) "+$deltaPercent%" else "$deltaPercent%",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
 private fun ReadinessPanel(
     captureState: MotionCaptureUiState,
     onShareLatestSession: () -> Unit,
@@ -423,7 +550,7 @@ private fun ReadinessPanel(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
-            text = "M3 | AUDIO + MOTION CAPTURE",
+            text = "PROTOTYPE | ON-DEVICE SCREENING",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold,
@@ -450,16 +577,32 @@ private fun ReadinessPanel(
 
 private fun baselineDetail(captureState: MotionCaptureUiState): String {
     return when {
-        captureState.phase == MotionCapturePhase.PREPARING -> {
+        captureState.captureMode == CaptureMode.BASELINE &&
+            captureState.phase == MotionCapturePhase.PREPARING -> {
             "Place phone flat and release it | starts in ${captureState.countdownSeconds} s"
         }
-        captureState.isCapturing -> {
+        captureState.captureMode == CaptureMode.BASELINE && captureState.isCapturing -> {
             val elapsed = String.format(Locale.US, "%.1f", captureState.elapsedMillis / 1_000.0)
             val target = String.format(Locale.US, "%.1f", captureState.targetDurationMillis / 1_000.0)
             "Recording motion $elapsed / $target s | ${captureState.sampleCount} samples"
         }
         captureState.baselineSessionCount == 0 -> "No combined baseline sessions recorded"
         else -> "${captureState.baselineSessionCount} combined baseline session(s) saved"
+    }
+}
+
+private fun scanDetail(captureState: MotionCaptureUiState): String {
+    return when {
+        captureState.captureMode == CaptureMode.OBSERVATION &&
+            captureState.phase == MotionCapturePhase.PREPARING -> {
+            "Place phone flat | scan starts in ${captureState.countdownSeconds} s"
+        }
+        captureState.captureMode == CaptureMode.OBSERVATION && captureState.isCapturing -> {
+            val elapsed = String.format(Locale.US, "%.1f", captureState.elapsedMillis / 1_000.0)
+            val target = String.format(Locale.US, "%.1f", captureState.targetDurationMillis / 1_000.0)
+            "Comparing observation $elapsed / $target s"
+        }
+        else -> "Ready for a normal or changed-state observation"
     }
 }
 
@@ -485,6 +628,7 @@ private fun MachinePulseHomePreview() {
                 microphonePermissionGranted = true,
             ),
             onStartMotionCapture = {},
+            onStartScanCapture = {},
             onCancelMotionCapture = {},
             onShareLatestSession = {},
         )

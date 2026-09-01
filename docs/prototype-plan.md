@@ -118,13 +118,25 @@ sample-size limitations.
 
 ### M8 - Anomaly model
 
+**Status:** Rapid on-device prototype implemented on 2026-09-01; physical
+baseline-versus-observation validation remains.
+
 **Deliverables:** baseline-only `StandardScaler` plus an explainable statistical
 threshold or `IsolationForest`, held-out evaluation, and per-feature deviations.
+
+**Prototype note:** the time-boxed Android path uses transparent baseline
+tolerances over acoustic RMS, audio zero-crossing rate, and dynamic vibration
+RMS. It requires three quality-accepted baselines, rejects moved/clipped/silent
+captures, and does not claim fault diagnosis. Python evaluation remains the
+required follow-up before treating thresholds as validated.
 
 **Exit evidence:** model artifact, reproducible command, leakage checks, and honest
 evaluation report.
 
 ### M9 - Android result UI
+
+**Status:** Prototype UI implemented on 2026-09-01; physical result replay
+remains.
 
 **Deliverables:** result ingestion, `BASELINE MATCH` / `OUT OF BASELINE` state,
 actual score and deviation values, evidence explanation, and accessible spectra.

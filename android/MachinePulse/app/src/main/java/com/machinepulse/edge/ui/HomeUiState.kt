@@ -8,7 +8,7 @@ data class HomeUiState(
     val audioCaptureReady: Boolean = false,
 ) {
     val baselineReady: Boolean
-        get() = baselineSessionCount > 0
+        get() = baselineSessionCount >= 3
 
     val scanReady: Boolean
         get() = baselineReady && audioCaptureReady

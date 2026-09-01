@@ -11,16 +11,17 @@ class HomeUiStateTest {
     }
 
     @Test
-    fun baselineIsReadyAfterAtLeastOneRecordedSession() {
-        assertTrue(HomeUiState(baselineSessionCount = 1).baselineReady)
+    fun baselineRequiresThreeAcceptedSessions() {
+        assertFalse(HomeUiState(baselineSessionCount = 2).baselineReady)
+        assertTrue(HomeUiState(baselineSessionCount = 3).baselineReady)
     }
 
     @Test
     fun scanRequiresBothBaselineAndAudioCapture() {
-        assertFalse(HomeUiState(baselineSessionCount = 1).scanReady)
+        assertFalse(HomeUiState(baselineSessionCount = 3).scanReady)
         assertTrue(
             HomeUiState(
-                baselineSessionCount = 1,
+                baselineSessionCount = 3,
                 audioCaptureReady = true,
             ).scanReady,
         )

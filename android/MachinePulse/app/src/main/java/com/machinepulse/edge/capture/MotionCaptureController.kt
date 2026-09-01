@@ -23,6 +23,9 @@ import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 
 private const val DEFAULT_CAPTURE_DURATION_MILLIS = 10_000L
 private const val SENSOR_SAMPLING_PERIOD_MICROS = 10_000
@@ -39,6 +42,11 @@ enum class MotionCapturePhase {
     UNAVAILABLE,
 }
 
+enum class CaptureMode(val filePrefix: String, val metadataValue: String) {
+    BASELINE("baseline", "baseline"),
+    OBSERVATION("observation", "observation"),
+}
+
 data class MotionCaptureUiState(
     val phase: MotionCapturePhase,
     val sensorName: String? = null,
@@ -49,6 +57,8 @@ data class MotionCaptureUiState(
     val baselineSessionCount: Int = 0,
     val microphonePermissionGranted: Boolean = false,
     val countdownSeconds: Int = 0,
+    val captureMode: CaptureMode = CaptureMode.BASELINE,
+    val latestComparison: BaselineComparison? = null,
     val latestSummary: String? = null,
     val errorMessage: String? = null,
 ) {
@@ -97,6 +107,20 @@ class MotionCaptureController(context: Context) : SensorEventListener {
     private var activeSampleCount = 0
     private var countdownEndsAtElapsedNanos = 0L
     private var pendingCaptureDurationMillis = DEFAULT_CAPTURE_DURATION_MILLIS
+    private var pendingCaptureMode = CaptureMode.BASELINE
+    private var activeCaptureMode = CaptureMode.BASELINE
+    private var motionSumX = 0.0
+    private var motionSumY = 0.0
+    private var motionSumZ = 0.0
+    private var motionSquareSumX = 0.0
+    private var motionSquareSumY = 0.0
+    private var motionSquareSumZ = 0.0
+    private var motionMinX = Double.POSITIVE_INFINITY
+    private var motionMinY = Double.POSITIVE_INFINITY
+    private var motionMinZ = Double.POSITIVE_INFINITY
+    private var motionMaxX = Double.NEGATIVE_INFINITY
+    private var motionMaxY = Double.NEGATIVE_INFINITY
+    private var motionMaxZ = Double.NEGATIVE_INFINITY
 
     var uiState by mutableStateOf(initialState())
         private set
@@ -122,7 +146,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             if (uiState.phase != MotionCapturePhase.PREPARING) return
             val remainingNanos = countdownEndsAtElapsedNanos - SystemClock.elapsedRealtimeNanos()
             if (remainingNanos <= 0) {
-                startCapture(pendingCaptureDurationMillis)
+                startCapture(pendingCaptureDurationMillis, pendingCaptureMode)
                 return
             }
             val remainingSeconds = ((remainingNanos + 999_999_999L) / 1_000_000_000L).toInt()
@@ -131,7 +155,15 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         }
     }
 
-    fun prepareCapture(durationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS) {
+    fun prepareBaselineCapture(durationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS) {
+        prepareCapture(CaptureMode.BASELINE, durationMillis)
+    }
+
+    fun prepareObservationCapture(durationMillis: Long = DEFAULT_CAPTURE_DURATION_MILLIS) {
+        prepareCapture(CaptureMode.OBSERVATION, durationMillis)
+    }
+
+    private fun prepareCapture(mode: CaptureMode, durationMillis: Long) {
         if (uiState.isActive) return
         if (accelerometer == null) {
             uiState = uiState.copy(
@@ -150,6 +182,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         }
 
         pendingCaptureDurationMillis = durationMillis
+        pendingCaptureMode = mode
         countdownEndsAtElapsedNanos = SystemClock.elapsedRealtimeNanos() +
             SETTLE_COUNTDOWN_MILLIS * 1_000_000L
         uiState = uiState.copy(
@@ -159,13 +192,15 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             elapsedMillis = 0,
             sampleCount = 0,
             audioSampleCount = 0,
+            captureMode = mode,
+            latestComparison = if (mode == CaptureMode.BASELINE) uiState.latestComparison else null,
             latestSummary = null,
             errorMessage = null,
         )
         mainHandler.post(countdownUpdate)
     }
 
-    private fun startCapture(durationMillis: Long) {
+    private fun startCapture(durationMillis: Long, mode: CaptureMode) {
         if (uiState.isCapturing) return
         val sensor = accelerometer
         if (sensor == null) {
@@ -186,7 +221,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
 
         try {
             sessionsDirectory.mkdirs()
-            val sessionName = "baseline_${timestampForFileName()}"
+            val sessionName = "${mode.filePrefix}_${timestampForFileName()}"
             sessionDirectory = File(sessionsDirectory, sessionName).also { it.mkdirs() }
             csvWriter = BufferedWriter(FileWriter(File(sessionDirectory, "accelerometer.csv"))).also {
                 it.write("timestamp_ns,elapsed_ms,x_m_s2,y_m_s2,z_m_s2,accuracy")
@@ -198,6 +233,8 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             lastSensorTimestampNanos = Long.MIN_VALUE
             activeSampleCount = 0
             audioCaptureResult = null
+            activeCaptureMode = mode
+            resetMotionStatistics()
 
             audioCaptureEngine = AudioCaptureEngine(sessionDirectory!!) { error ->
                 mainHandler.post {
@@ -225,6 +262,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
                 audioSampleCount = 0,
                 countdownSeconds = 0,
                 microphonePermissionGranted = true,
+                captureMode = mode,
                 latestSummary = null,
                 errorMessage = null,
             )
@@ -318,6 +356,7 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             }
             lastSensorTimestampNanos = event.timestamp
             activeSampleCount += 1
+            updateMotionStatistics(sample)
         } catch (error: Exception) {
             finishCapture(completed = false, failure = error)
         }
@@ -345,27 +384,85 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         }.exceptionOrNull()
         audioCaptureEngine = null
         val finalFailure = failure ?: audioFailure
+        val features = if (
+            finalFailure == null && activeSampleCount > 0 && (audioCaptureResult?.sampleCount ?: 0) > 0
+        ) {
+            buildSignalFeatures(audioCaptureResult!!)
+        } else {
+            null
+        }
+        val quality = features?.let(::assessCaptureQuality)
+        val baselineFeatures = if (
+            activeCaptureMode == CaptureMode.OBSERVATION && quality?.accepted == true
+        ) {
+            loadAcceptedBaselineFeatures()
+        } else {
+            emptyList()
+        }
+        val comparison = if (
+            activeCaptureMode == CaptureMode.OBSERVATION &&
+            features != null &&
+            quality?.accepted == true &&
+            baselineFeatures.isNotEmpty()
+        ) {
+            compareWithBaselines(features, baselineFeatures)
+        } else {
+            null
+        }
         val outcome = when {
             finalFailure != null -> "failed"
-            completed && activeSampleCount > 0 && (audioCaptureResult?.sampleCount ?: 0) > 0 -> "completed"
-            completed -> "failed"
-            else -> "cancelled"
+            !completed -> "cancelled"
+            features == null -> "failed"
+            quality?.accepted == false -> "rejected"
+            activeCaptureMode == CaptureMode.OBSERVATION && comparison == null -> "failed"
+            else -> "completed"
         }
+        val note = finalFailure?.message
+            ?: cancellationReason
+            ?: quality?.takeIf { !it.accepted }?.reason
+            ?: if (activeCaptureMode == CaptureMode.OBSERVATION && comparison == null) {
+                "No accepted baseline was available for comparison."
+            } else {
+                null
+            }
         writeMetadata(
             outcome = outcome,
             durationMillis = durationMillis,
-            note = finalFailure?.message ?: cancellationReason,
+            features = features,
+            quality = quality,
+            comparison = comparison,
+            note = note,
         )
 
         uiState = when (outcome) {
-            "completed" -> uiState.copy(
-                phase = MotionCapturePhase.COMPLETE,
+            "completed" -> if (activeCaptureMode == CaptureMode.BASELINE) {
+                uiState.copy(
+                    phase = MotionCapturePhase.COMPLETE,
+                    elapsedMillis = durationMillis,
+                    sampleCount = activeSampleCount,
+                    audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
+                    baselineSessionCount = uiState.baselineSessionCount + 1,
+                    latestSummary = "Baseline accepted | ${formatSeconds(durationMillis)} s",
+                    errorMessage = null,
+                )
+            } else {
+                uiState.copy(
+                    phase = MotionCapturePhase.COMPLETE,
+                    elapsedMillis = durationMillis,
+                    sampleCount = activeSampleCount,
+                    audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
+                    latestSummary = "Scan complete | ${formatSeconds(durationMillis)} s",
+                    latestComparison = comparison,
+                    errorMessage = null,
+                )
+            }
+            "rejected" -> uiState.copy(
+                phase = MotionCapturePhase.READY,
                 elapsedMillis = durationMillis,
                 sampleCount = activeSampleCount,
                 audioSampleCount = audioCaptureResult?.sampleCount ?: 0,
-                baselineSessionCount = uiState.baselineSessionCount + 1,
-                latestSummary = "Saved ${formatSeconds(durationMillis)} s | " +
-                    "$activeSampleCount motion + ${audioCaptureResult?.sampleCount ?: 0} audio samples",
+                latestSummary = "Rejected | ${quality?.reason}",
+                latestComparison = null,
                 errorMessage = null,
             )
             "cancelled" -> uiState.copy(
@@ -388,12 +485,19 @@ class MotionCaptureController(context: Context) : SensorEventListener {
         sessionDirectory = null
     }
 
-    private fun writeMetadata(outcome: String, durationMillis: Long, note: String?) {
+    private fun writeMetadata(
+        outcome: String,
+        durationMillis: Long,
+        features: SignalFeatures?,
+        quality: CaptureQuality?,
+        comparison: BaselineComparison?,
+        note: String?,
+    ) {
         val directory = sessionDirectory ?: return
         val sensor = accelerometer ?: return
         val metadata = JSONObject().apply {
-            put("schema_version", 2)
-            put("session_type", "baseline")
+            put("schema_version", 3)
+            put("session_type", activeCaptureMode.metadataValue)
             put("capture_channels", JSONArray(listOf("accelerometer", "microphone")))
             put("outcome", outcome)
             put("started_at_unix_ms", sessionStartWallMillis)
@@ -405,6 +509,10 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             put("audio_channel_count", 1)
             put("audio_encoding", "PCM_16BIT_LE")
             put("audio_data_bytes", audioCaptureResult?.dataBytes ?: 0)
+            put("audio_rms", audioCaptureResult?.rmsAmplitude ?: 0.0)
+            put("audio_peak", audioCaptureResult?.peakAmplitude ?: 0)
+            put("audio_clipping_fraction", audioCaptureResult?.clippingFraction ?: 0.0)
+            put("audio_zero_crossing_rate", audioCaptureResult?.zeroCrossingRate ?: 0.0)
             put("manufacturer", Build.MANUFACTURER)
             put("model", Build.MODEL)
             put("device", Build.DEVICE)
@@ -417,6 +525,32 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             put("sensor_max_range_m_s2", sensor.maximumRange.toDouble())
             put("sensor_min_delay_us", sensor.minDelay)
             put("requested_sampling_period_us", SENSOR_SAMPLING_PERIOD_MICROS)
+            if (features != null) {
+                put("features", JSONObject().apply {
+                    put("audio_rms", features.audioRms)
+                    put("audio_peak", features.audioPeak)
+                    put("audio_clipping_fraction", features.audioClippingFraction)
+                    put("audio_zero_crossing_rate", features.audioZeroCrossingRate)
+                    put("motion_dynamic_rms", features.motionDynamicRms)
+                    put("motion_max_axis_range", features.motionMaxAxisRange)
+                })
+            }
+            if (quality != null) {
+                put("quality", JSONObject().apply {
+                    put("accepted", quality.accepted)
+                    put("reason", quality.reason)
+                })
+            }
+            if (comparison != null) {
+                put("comparison", JSONObject().apply {
+                    put("out_of_baseline", comparison.outOfBaseline)
+                    put("score", comparison.score)
+                    put("primary_explanation", comparison.primaryExplanation)
+                    put("audio_rms_delta_percent", comparison.audioRmsDeltaPercent)
+                    put("vibration_delta_percent", comparison.vibrationDeltaPercent)
+                    put("spectral_proxy_delta_percent", comparison.spectralProxyDeltaPercent)
+                })
+            }
             if (note != null) put("note", note)
         }
         runCatching {
@@ -446,13 +580,98 @@ class MotionCaptureController(context: Context) : SensorEventListener {
             ?.filter { it.isDirectory }
             ?.count { directory ->
                 runCatching {
-                    JSONObject(File(directory, "metadata.json").readText())
-                        .optString("outcome") == "completed" &&
+                    val metadata = JSONObject(File(directory, "metadata.json").readText())
+                    metadata.optInt("schema_version") >= 3 &&
+                        metadata.optString("session_type") == CaptureMode.BASELINE.metadataValue &&
+                        metadata.optString("outcome") == "completed" &&
+                        metadata.optJSONObject("quality")?.optBoolean("accepted") == true &&
                         File(directory, "accelerometer.csv").isFile &&
                         File(directory, "audio.wav").isFile
                 }.getOrDefault(false)
             }
             ?: 0
+    }
+
+    private fun loadAcceptedBaselineFeatures(): List<SignalFeatures> {
+        return sessionsDirectory.listFiles()
+            ?.mapNotNull { directory ->
+                runCatching {
+                    val metadata = JSONObject(File(directory, "metadata.json").readText())
+                    if (
+                        metadata.optInt("schema_version") < 3 ||
+                        metadata.optString("session_type") != CaptureMode.BASELINE.metadataValue ||
+                        metadata.optString("outcome") != "completed" ||
+                        metadata.optJSONObject("quality")?.optBoolean("accepted") != true
+                    ) {
+                        return@runCatching null
+                    }
+                    metadata.optJSONObject("features")?.toSignalFeatures()
+                }.getOrNull()
+            }
+            ?: emptyList()
+    }
+
+    private fun JSONObject.toSignalFeatures(): SignalFeatures {
+        return SignalFeatures(
+            audioRms = getDouble("audio_rms"),
+            audioPeak = getInt("audio_peak"),
+            audioClippingFraction = getDouble("audio_clipping_fraction"),
+            audioZeroCrossingRate = getDouble("audio_zero_crossing_rate"),
+            motionDynamicRms = getDouble("motion_dynamic_rms"),
+            motionMaxAxisRange = getDouble("motion_max_axis_range"),
+        )
+    }
+
+    private fun resetMotionStatistics() {
+        motionSumX = 0.0
+        motionSumY = 0.0
+        motionSumZ = 0.0
+        motionSquareSumX = 0.0
+        motionSquareSumY = 0.0
+        motionSquareSumZ = 0.0
+        motionMinX = Double.POSITIVE_INFINITY
+        motionMinY = Double.POSITIVE_INFINITY
+        motionMinZ = Double.POSITIVE_INFINITY
+        motionMaxX = Double.NEGATIVE_INFINITY
+        motionMaxY = Double.NEGATIVE_INFINITY
+        motionMaxZ = Double.NEGATIVE_INFINITY
+    }
+
+    private fun updateMotionStatistics(sample: MotionSample) {
+        val x = sample.xMetersPerSecondSquared.toDouble()
+        val y = sample.yMetersPerSecondSquared.toDouble()
+        val z = sample.zMetersPerSecondSquared.toDouble()
+        motionSumX += x
+        motionSumY += y
+        motionSumZ += z
+        motionSquareSumX += x * x
+        motionSquareSumY += y * y
+        motionSquareSumZ += z * z
+        motionMinX = min(motionMinX, x)
+        motionMinY = min(motionMinY, y)
+        motionMinZ = min(motionMinZ, z)
+        motionMaxX = max(motionMaxX, x)
+        motionMaxY = max(motionMaxY, y)
+        motionMaxZ = max(motionMaxZ, z)
+    }
+
+    private fun buildSignalFeatures(audio: AudioCaptureResult): SignalFeatures {
+        val count = activeSampleCount.coerceAtLeast(1).toDouble()
+        val varianceX = max(0.0, motionSquareSumX / count - (motionSumX / count) * (motionSumX / count))
+        val varianceY = max(0.0, motionSquareSumY / count - (motionSumY / count) * (motionSumY / count))
+        val varianceZ = max(0.0, motionSquareSumZ / count - (motionSumZ / count) * (motionSumZ / count))
+        val maxAxisRange = max(
+            motionMaxX - motionMinX,
+            max(motionMaxY - motionMinY, motionMaxZ - motionMinZ),
+        )
+        return SignalFeatures(
+            audioRms = audio.rmsAmplitude,
+            audioPeak = audio.peakAmplitude,
+            audioClippingFraction = audio.clippingFraction,
+            audioZeroCrossingRate = audio.zeroCrossingRate,
+            motionDynamicRms = sqrt(varianceX + varianceY + varianceZ),
+            motionMaxAxisRange = maxAxisRange,
+        )
     }
 
     private fun elapsedSinceSessionStartMillis(): Long {
