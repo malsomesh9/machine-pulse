@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+*.iml
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+captures/
+*.apk
+*.aab
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local experiment data and generated models
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/*.joblib
+models/*.json
+
+# Generated result assets are added intentionally after real experiments
+docs/results/*
+!docs/results/.gitkeep

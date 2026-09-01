@@ -1,0 +1,9 @@
+# Versions will be pinned and verified at M6 against the selected Python runtime.
+numpy
+scipy
+pandas
+matplotlib
+scikit-learn
+librosa
+soundfile
+joblib
