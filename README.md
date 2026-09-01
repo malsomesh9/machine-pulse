@@ -1,115 +1,191 @@
 # MachinePulse Edge
 
-> Turn your smartphone into an AI stethoscope for machines.
+> **An AI stethoscope for machines, powered by the sensors already inside an Android phone.**
 
-MachinePulse Edge is a phone-first anomaly-screening prototype for the iQOO
-Hackathon 2026 Open Innovation track. It uses sensors already in an Android
-phone to learn a machine's normal acoustic and vibration fingerprint, then
-checks whether a later scan differs meaningfully from that baseline.
+![Android](https://img.shields.io/badge/Android-24%2B-3DDC84?logo=android&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)
+![Processing](https://img.shields.io/badge/Processing-On--device-00A67E)
+![Prototype](https://img.shields.io/badge/Prototype-Physically%20validated-2EA44F)
 
-MachinePulse Edge does **not** diagnose arbitrary mechanical faults and is not
-a replacement for certified industrial condition-monitoring equipment.
+MachinePulse Edge is a phone-first machine anomaly-screening prototype built for
+the **iQOO Hackathon 2026 Open Innovation track**. It records synchronized sound
+and vibration, learns a machine's normal operating fingerprint, and checks
+whether a later observation remains inside that learned baseline.
 
-## Problem
+The result is intentionally narrow and explainable:
 
-Small workshops, facilities teams, and technicians may not have dedicated
-condition-monitoring sensors on every machine. A modern phone already combines
-a microphone, motion sensors, local compute, storage, and a useful interface.
-The project tests whether those capabilities can support a practical first-pass
-question: **is this machine behaving significantly differently from its learned
-normal state?**
+- `BASELINE MATCH`
+- `OUT OF BASELINE`
 
-## Why Phone-First?
+MachinePulse does **not** invent a fault diagnosis or replace certified
+industrial condition-monitoring equipment.
 
-The phone is the sensing device, eventual inference device, user interface, and
-local history store. Laptop-side Python analysis is part of the pre-selection
-validation workflow only; the City Battle target is local feature extraction
-and inference on the Android device.
+## Why It Matters
+
+Small workshops, facility teams, and technicians may not have dedicated sensors
+installed on every machine. A modern Android phone already provides a
+microphone, accelerometer, local compute, storage, and an accessible interface.
+MachinePulse turns that existing hardware into a zero-extra-sensor first-pass
+screening tool.
+
+## Verified Prototype
+
+The physical experiment used a table fan, three learned baseline recordings,
+one repeated normal observation, and one controlled changed operating state.
+
+| Observation | Quality gate | Result | Score | Key measured change |
+| --- | --- | --- | ---: | --- |
+| Repeated baseline state | Accepted | `BASELINE MATCH` | 40 | Signals stayed within learned tolerances |
+| Moved-phone attempt | Rejected | Not scored | - | Placement instability detected |
+| Changed operating state | Accepted | `OUT OF BASELINE` | 999 | Vibration +1542%, acoustic RMS +860% |
+
+The changed fan speed is a **controlled operating-state change**, not a simulated
+mechanical fault. Aggregate validation evidence is documented in
+[Prototype Validation](docs/results/prototype-validation.md).
 
 ## How It Works
 
-1. Select a machine and record several baseline sessions in one normal state.
-2. Capture synchronized audio and motion measurements for a new scan.
-3. Extract interpretable time- and frequency-domain features.
-4. Compare the scan with a model fitted only to baseline training sessions.
-5. Report `BASELINE MATCH` or `OUT OF BASELINE` with measured deviations.
+```mermaid
+flowchart LR
+    A[Machine] --> B[Android phone]
 
-See [the architecture](docs/architecture.md) for the system boundaries.
+    subgraph PHONE[MachinePulse Edge on Android]
+        B --> C[Microphone capture]
+        B --> D[Accelerometer capture]
+        C --> E[Signal features]
+        D --> E
+        E --> F{Capture quality gate}
+        F -->|Unstable, silent, or clipped| G[Reject and retry]
+        F -->|Accepted baseline| H[Learn baseline profile]
+        F -->|Accepted observation| I[Compare with baseline]
+        H --> I
+        I --> J{Explainable score}
+        J --> K[BASELINE MATCH]
+        J --> L[OUT OF BASELINE]
+    end
 
-## Current Prototype Status
+    K --> M[Local result and ZIP export]
+    L --> M
+```
 
-- [x] Repository scaffolded
-- [x] Android project builds on the audited development machine
-- [ ] Accelerometer capture
-- [ ] WAV microphone capture
-- [ ] Structured session export
-- [ ] Real fan dataset collected
-- [ ] Python feature extraction
-- [ ] Baseline model validated
-- [ ] Android result presentation
-- [ ] On-device inference
-- [ ] Camera/OCR context
+1. Record three quality-accepted sessions in the machine's normal state.
+2. Capture a new 10-second audio and motion observation.
+3. Reject captures affected by phone movement, silence, or audio clipping.
+4. Compare acoustic RMS, an acoustic spectral proxy, and vibration energy with
+   the learned baseline.
+5. Display the result, score, and measured feature deviations locally.
 
-M0 and M1 are complete. No hardware testing, real data collection, or anomaly
-result is claimed yet.
+## Session Data Schema
 
-## Prototype Experiment
+Every accepted or rejected capture is auditable. A shared session ZIP contains
+the raw audio, timestamped motion samples, metadata, quality decision, extracted
+features, and any comparison result.
 
-The first controlled experiment compares a table fan at speed 1 with the same
-fan at another built-in speed. The changed speed is a safe changed operating
-state, not a simulated fault. The protocol is documented in
-[Experiment 01](experiments/experiment-01-table-fan.md).
+```mermaid
+erDiagram
+    MACHINE ||--o{ CAPTURE_SESSION : produces
+    CAPTURE_SESSION ||--|| AUDIO_STREAM : contains
+    CAPTURE_SESSION ||--|| MOTION_STREAM : contains
+    CAPTURE_SESSION ||--|| SIGNAL_FEATURES : derives
+    CAPTURE_SESSION ||--|| QUALITY_RESULT : validates
+    CAPTURE_SESSION o|--o| BASELINE_COMPARISON : scores
 
-## Android App
+    MACHINE {
+        string machine_id PK
+        string name
+        string type
+    }
 
-The native app lives in `android/MachinePulse` and uses Kotlin, Jetpack Compose,
-and Material 3. M1 provides a truthful workflow shell; sensor actions remain
-disabled until their capture implementations are complete.
+    CAPTURE_SESSION {
+        string session_id PK
+        string session_type
+        string outcome
+        long started_at_unix_ms
+        int duration_ms
+        string device_model
+    }
 
-With JDK 17 and the Android SDK available:
+    AUDIO_STREAM {
+        string file_name
+        int sample_rate_hz
+        int channel_count
+        string encoding
+        long sample_count
+    }
+
+    MOTION_STREAM {
+        string file_name
+        int sample_count
+        string sensor_name
+        int sampling_period_us
+    }
+
+    SIGNAL_FEATURES {
+        double audio_rms
+        double zero_crossing_rate
+        double motion_dynamic_rms
+        double motion_max_axis_range
+    }
+
+    QUALITY_RESULT {
+        boolean accepted
+        string reason
+        double clipping_fraction
+    }
+
+    BASELINE_COMPARISON {
+        boolean out_of_baseline
+        int score
+        int audio_delta_percent
+        int vibration_delta_percent
+        int spectral_delta_percent
+        string explanation
+    }
+```
+
+```text
+machinepulse_session.zip
+|-- audio.wav           # mono, 44.1 kHz, PCM 16-bit
+|-- accelerometer.csv   # monotonic timestamp + x/y/z acceleration
+\-- metadata.json       # device, quality, features, and result
+```
+
+## Android Stack
+
+- Kotlin and Jetpack Compose
+- Material 3
+- `AudioRecord` for mono PCM capture
+- `SensorManager` for timestamped accelerometer capture
+- Local feature extraction and baseline comparison
+- Android `FileProvider` for secure ZIP export
+
+The current prototype was physically validated on a **realme RMX5085** using
+standard Android sensor APIs. iQOO-specific performance is not claimed until the
+same experiment is run on iQOO hardware.
+
+## Build
+
+Requirements: JDK 17 and an Android SDK with API 37 available.
 
 ```bash
 cd android/MachinePulse
-./gradlew assembleDebug testDebugUnitTest
+./gradlew assembleDebug testDebugUnitTest lintDebug
 ```
 
-The M1 verification also runs `./gradlew lintDebug`. The generated debug APK is
-an uncommitted build artifact under `app/build/outputs/apk/debug/`.
+The debug APK is generated at:
 
-## Python Analysis
+```text
+android/MachinePulse/app/build/outputs/apk/debug/app-debug.apk
+```
 
-The future offline validation pipeline will live in `analysis/`. It will read
-exported sessions, estimate sample rates from timestamps, extract interpretable
-features, train only on baseline data, and evaluate normal versus controlled
-changed-state sessions. No Python environment is installed in M1.
+## Safety And Privacy
 
-## Data Collection Protocol
+- Use only safe built-in machine operating modes.
+- Never open, obstruct, damage, or deliberately fault powered equipment.
+- Keep phone placement and distance consistent between recordings.
+- Avoid private conversations while microphone capture is active.
+- Treat outputs as screening evidence, not a mechanical diagnosis.
 
-- Use a safe built-in machine mode such as fan speed 1 versus speed 3.
-- Keep phone position, distance, duration, and environment as consistent as possible.
-- Avoid capturing private conversations in microphone recordings.
-- Do not damage, open, obstruct, or deliberately fault powered machinery.
-- Keep recordings local during prototype testing.
+## License
 
-## Results
-
-No real experiment results exist yet. Generated plots and measured evaluation
-outputs will be added under `docs/results/` only after physical data collection.
-
-## Limitations
-
-**MachinePulse Edge is an anomaly-screening prototype, not a certified machine
-diagnostic instrument.** Results will be machine-specific and sensitive to phone
-placement, environmental noise, device sensors, sampling behavior, and the size
-of the learned baseline dataset.
-
-## Hackathon Roadmap
-
-The evidence boundary between completed work and City Battle goals is maintained
-in [the hackathon roadmap](docs/hackathon-roadmap.md). The immediate engineering
-sequence is tracked in [the prototype plan](docs/prototype-plan.md).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, safety, and data-handling
-expectations.
+This project is available under the [MIT License](LICENSE).
